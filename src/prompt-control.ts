@@ -143,6 +143,37 @@ export function createGenuiPromptControl(
 }
 
 /**
+ * Whether a request came from the DSH page itself.
+ *
+ * The route carries no CSRF token, so it leans on the browser's own request
+ * metadata instead: a cross-site `fetch` is labelled `Sec-Fetch-Site:
+ * cross-site` and carries a foreign `Origin`, while the composer button talks
+ * to its own host. Clients that send neither header (curl, a maintainer script)
+ * keep working — they already run with the user's authority on the host.
+ * @param req - incoming request; only the headers are read.
+ * @returns true when the request may change toggle state.
+ */
+export function isTrustedPromptRequest(req: Pick<IncomingMessage, 'headers'>): boolean {
+  const headers = req.headers ?? {}
+  // A browser labels every request it makes. A rebound hostname resolves to the
+  // loopback address, so its Origin host *matches* this server's Host header and
+  // the comparison below would pass — the label is what catches it.
+  const site = headers['sec-fetch-site']
+  if (typeof site === 'string' && site !== 'same-origin' && site !== 'none') return false
+  const origin = headers.origin
+  // A same-origin GET carries no Origin; a browser POST always does.
+  if (typeof origin !== 'string' || origin.length === 0) return true
+  const host = headers.host
+  if (typeof host !== 'string' || host.length === 0) return false
+  try {
+    // Opaque origins ('null' from a sandboxed frame or a data: URL) do not parse.
+    return new URL(origin).host === host
+  } catch {
+    return false
+  }
+}
+
+/**
  * Handle GET (read state) and POST `{ enabled: boolean }` (set state).
  * This is deliberately tiny and same-origin only; the button owns the UI state.
  * @param control - host prompt toggle.
@@ -151,6 +182,12 @@ export function createGenuiPromptControlHandler(
   control: Pick<GenuiPromptControl, 'isEnabled' | 'set'> & { persisted?: () => boolean },
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
+    // Reads are covered too: a rebound hostname could otherwise read the state
+    // it cannot write (the composer's own GET carries no Origin and passes).
+    if (!isTrustedPromptRequest(req)) {
+      respond(res, 403, { error: 'cross-origin' })
+      return
+    }
     if (req.method === 'GET') {
       respond(res, 200, {
         enabled: control.isEnabled(),
@@ -175,6 +212,10 @@ export function createGenuiPromptControlHandler(
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 async function readJsonObject(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
   let total = 0
@@ -186,9 +227,7 @@ async function readJsonObject(req: IncomingMessage): Promise<Record<string, unkn
   }
   if (chunks.length === 0) return {}
   const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('body-must-be-object')
-  }
+  if (!isRecord(parsed)) throw new Error('body-must-be-object')
   return parsed
 }
 
