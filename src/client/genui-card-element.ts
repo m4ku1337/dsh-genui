@@ -6,7 +6,7 @@
  * set by the pre-plugin bootstrap) and feeds the resolved mode to
  * GenuiConfigProvider and HuiCharts schemas.
  */
-import { computed, defineComponent, defineCustomElement, h, onMounted, onUnmounted, ref, type PropType } from 'vue'
+import { computed, defineComponent, defineCustomElement, h, onMounted, onUnmounted, ref, watch, type PropType } from 'vue'
 import { GenuiConfigProvider } from '@opentiny/genui-sdk-vue/config-provider'
 import { GenuiRenderer } from '@opentiny/genui-sdk-vue/renderer'
 import type { ICustomAction } from '@opentiny/genui-sdk-vue/renderer'
@@ -36,6 +36,22 @@ const DshGenuiCard = defineComponent({
     const themedContent = computed(() => (
       parseThemedContent(props.content, themeMode.value === 'dark', props.isJsonComplete)
     ))
+
+    // A dropped hook is otherwise invisible: the card renders fine and the
+    // behavior it was asked to perform simply never happens.
+    let policyWarned = false
+    watch(themedContent, (value) => {
+      const tags = value.blockedTags.join(', ')
+      const changed = value.lifecycleScriptsRemoved + value.blockedTags.length + value.blockedUrls
+      if (changed === 0 || policyWarned) return
+      policyWarned = true
+      console.warn(
+        '[dsh-genui] card content policy: dropped '
+        + String(value.lifecycleScriptsRemoved) + ' lifecycle hook(s)'
+        + (tags === '' ? '' : ', refused tag(s) ' + tags)
+        + (value.blockedUrls === 0 ? '' : ', refused ' + String(value.blockedUrls) + ' script URL(s)'),
+      )
+    })
 
     // Follow DSH host theme switches live (Settings → Appearance, or OS when
     // preference is "system"). body[data-ds-dark-theme] is the stable signal.
