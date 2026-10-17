@@ -13,7 +13,12 @@ jsdom against the built bundle, or is labelled as reasoning.
   tags that can load or run code — `script`, `iframe`, `frame`, `frameset`,
   `object`, `embed`, `applet`, `base`, `link`, `meta`, `template` — and refuses
   `javascript:`, `vbscript:` and `data:text/html` URLs in the attributes a browser
-  acts on (`href`, `src`, `srcdoc`, `action`, `formaction`, `poster`, `data`).
+  acts on (`href`, `src`, `srcdoc`, `action`, `formaction`, `poster`, `data`), refuses
+  props that hand the renderer a finished HTML string (`innerHTML`, `outerHTML` — a
+  `<script>` hidden inside one is invisible to a schema-level walk; measured reaching
+  the DOM before this rule), and refuses event-handler attributes (`onerror`,
+  `onclick`, … by name — a pattern would also eat card keys such as `once`).
+  `ping` is deliberately outside this list: it beacons on click but carries no code.
   Benign tags the SDK's own examples use — `div`, `span`, headings, tables,
   `img` — still render. Pinned by `tests/card-render-policy.spec.ts`.
 
@@ -52,12 +57,13 @@ jsdom against the built bundle, or is labelled as reasoning.
 
 - **Render-time hooks.** `lifeCycles` (`onMounted`, `onUnmounted`) is removed
   before rendering, because the renderer awaits `onMounted` itself while
-  mounting. Removal is counted and logged once per card.
+  mounting. Removal is counted and logged once per card (pinned by a console-warn spy).
 - **Executable HTML and script URLs** — the list above.
 - **Cross-site writes and reads on the toggle endpoint.** `/api/dsh-genui/prompt`
   refuses a foreign `Origin`, an opaque `null` origin, and any browser label
   other than `same-origin` / `none` (`src/prompt-control.ts`). That last rule is
-  what catches DNS rebinding: a rebound hostname matches its own `Host` header,
+  measured: the label alone let a rebinding page through, so the check also refuses any
+  non-loopback `Host` authority (the endpoint is only ever served on loopback).
   so comparing Origin against Host is not enough on its own. This layer stops
   other web pages; it is not a defence against a local process, which can call
   the endpoint with no browser headers and with your own authority.

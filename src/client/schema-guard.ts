@@ -28,11 +28,61 @@ const LIFECYCLE_KEY = 'lifeCycles'
  */
 const FORBIDDEN_TAGS = new Set([
   'script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet',
-  'base', 'link', 'meta', 'template',
+    'base', 'link', 'meta', 'template', 'style',
+  
 ])
 
 /** Attributes whose string value the browser resolves as a URL. */
 const URL_KEYS = new Set(['href', 'src', 'srcdoc', 'action', 'formaction', 'poster', 'data', 'xlink:href'])
+
+/**
+ * Props that hand the renderer a finished HTML string. The guard walks the *schema*,
+ * so a `<script>` hidden inside such a string is invisible to every rule below —
+ * measured in jsdom: `{ props: { innerHTML: '<iframe srcdoc=…><img onerror=…>' } }`
+ * reached the DOM intact on the unpatched branch. They are refused outright; a card
+ * that genuinely needs composed HTML has to go through the host, not the model.
+ */
+const HTML_PROPS = new Set(['innerhtml', 'outerhtml'])
+
+/**
+ * What the URL parser will see. It ignores ASCII tab/LF/CR wherever they appear and
+ * strips leading C0 controls, so `jav\tascript:` IS `javascript:` to the browser while
+ * the literal string passes a naive regex (measured in jsdom: the attribute survived,
+ * the resolved protocol was `javascript:`).
+ */
+function isScriptUrl(value: string): boolean {
+  const seen = value.replace(/[\t\n\r]/g, '').replace(/^[\u0000-\u0020]+/, '')
+  return SCRIPT_URL.test(seen)
+}
+
+/**
+ * Attributes that are code, not data: the HTML/SVG event-handler content attributes.
+ *
+ * `onerror` on an `<img>` fires with no user interaction, and `setAttribute` compiles the
+ * string, so a schema carrying one runs model code at render time — the same threat as a
+ * `<script>` element, which is why the policy refuses it instead of relying on the tag.
+ *
+ * Matched against this list, not against `/^on[a-z]/i`: a pattern would also eat benign
+ * keys such as `once` or `only` that a card may legitimately carry.
+ */
+const HANDLER_KEYS = new Set([
+  'onabort', 'onactivate', 'onauxclick', 'onbeforeinput', 'onbeforematch', 'onbeforetoggle',
+  'onbeforeunload', 'onbegin', 'onblur', 'onbounce', 'oncancel', 'oncanplay', 'oncanplaythrough',
+  'onchange', 'onclick', 'onclose', 'oncontextlost', 'oncontextmenu', 'oncontextrestored',
+  'oncopy', 'oncuechange', 'oncut', 'ondblclick', 'ondrag', 'ondragend', 'ondragenter',
+  'ondragleave', 'ondragover', 'ondragstart', 'ondrop', 'ondurationchange', 'onemptied',
+  'onend', 'onended', 'onerror', 'onfinish', 'onfocus', 'onfocusin', 'onfocusout', 'onformdata',
+  'onfullscreenchange', 'onfullscreenerror', 'onhashchange', 'oninput', 'oninvalid', 'onkeydown',
+  'onkeypress', 'onkeyup', 'onload', 'onloadeddata', 'onloadedmetadata', 'onloadstart',
+  'onmessage', 'onmessageerror', 'onmousedown', 'onmouseenter', 'onmouseleave', 'onmousemove',
+  'onmouseout', 'onmouseover', 'onmouseup', 'onoffline', 'ononline', 'onpagehide', 'onpagereveal',
+  'onpageshow', 'onpageswap', 'onpaste', 'onpause', 'onplay', 'onplaying', 'onpopstate',
+  'onprogress', 'onratechange', 'onrejectionhandled', 'onrepeat', 'onreset', 'onresize',
+  'onrejectionhandled', 'onscroll', 'onscrollend', 'onsecuritypolicyviolation', 'onseeked',
+  'onseeking', 'onselect', 'onslotchange', 'onstalled', 'onstart', 'onstorage', 'onsubmit',
+  'onsuspend', 'ontimeupdate', 'ontoggle', 'onunhandledrejection', 'onunload', 'onvolumechange',
+  'onwaiting', 'onwheel', 'onzoom',
+])
 
 /** URL schemes that run code or load a document of the attacker's choosing. */
 const SCRIPT_URL = /^\s*(?:(?:javascript|vbscript)\s*:|data\s*:\s*text\/html)/i
@@ -66,6 +116,8 @@ interface Counters {
   removed: number
   blockedTags: string[]
   blockedUrls: number
+  /** Event-handler attributes refused because they run code. */
+  readonly blockedHandlers: number
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -106,7 +158,17 @@ function scrub(node: unknown, counters: Counters, options: SchemaGuardOptions): 
       changed = true
       continue
     }
-    if (URL_KEYS.has(key.toLowerCase()) && typeof child === 'string' && SCRIPT_URL.test(child)) {
+    if (HANDLER_KEYS.has(key.toLowerCase())) {
+      counters.blockedHandlers += 1
+      changed = true
+      continue
+    }
+    if (HTML_PROPS.has(key.toLowerCase())) {
+      counters.blockedTags.push(key)
+      changed = true
+      continue
+    }
+    if (URL_KEYS.has(key.toLowerCase()) && typeof child === 'string' && isScriptUrl(child)) {
       counters.blockedUrls += 1
       changed = true
       continue
@@ -124,9 +186,10 @@ function scrub(node: unknown, counters: Counters, options: SchemaGuardOptions): 
 
 /**
  * Apply the card content policy to a parsed schema.
- * Removal happens at any depth: the renderer honors a nested `lifeCycles` no
- * differently from a root one, and a hostile tag is a hostile tag wherever it
- * sits.
+ * Removal happens at any depth: a hostile tag is a hostile tag wherever it sits, and
+ * nested `lifeCycles` are dropped too. (Measured on the upstream v0.3.1 bundle: only a
+ * ROOT `lifeCycles` actually ran there — dropping nested ones is defence in depth, not a
+ * fix for an observed exploit.)
  * @param value - parsed schema, or any value inside one.
  * @param options - policy overrides.
  * @returns The policed value and an account of what was removed.
@@ -135,9 +198,9 @@ export function stripLifecycleScripts(
   value: unknown,
   options: SchemaGuardOptions = {},
 ): SchemaGuardResult {
-  const counters: Counters = { removed: 0, blockedTags: [], blockedUrls: 0 }
+  const counters: Counters = { removed: 0, blockedTags: [], blockedUrls: 0, blockedHandlers: 0 }
   if (options.allowLifecycleScripts === true && value === undefined) {
-    return { value, removed: 0, blockedTags: [], blockedUrls: 0 }
+    return { value, removed: 0, blockedTags: [], blockedUrls: 0, blockedHandlers: 0 }
   }
   const guarded = options.allowLifecycleScripts === true
     ? scrub(value, counters, { allowLifecycleScripts: true })
@@ -147,5 +210,6 @@ export function stripLifecycleScripts(
     removed: counters.removed,
     blockedTags: counters.blockedTags,
     blockedUrls: counters.blockedUrls,
+    blockedHandlers: counters.blockedHandlers,
   }
 }

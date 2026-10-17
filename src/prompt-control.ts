@@ -143,6 +143,17 @@ export function createGenuiPromptControl(
 }
 
 /**
+ * Authorities this control is served on: loopback addresses and `localhost`
+ * spellings. The composer talks to the plugin's own local server, so a Host
+ * naming anything else is not this page — it is a rebound or remote name, and a
+ * rebinding page's Host comparison passes by construction.
+ */
+const LOOPBACK_AUTHORITY = /^(?:localhost|\[::1\]|127(?:\.\d{1,3}){3}|\[::ffff:127(?:\.\d{1,3}){3}\])(?::\d+)?$/i
+
+function isLoopbackAuthority(host: string): boolean {
+  return LOOPBACK_AUTHORITY.test(host.trim())
+}
+/**
  * Whether a request came from the DSH page itself.
  *
  * The route carries no CSRF token, so it leans on the browser's own request
@@ -155,16 +166,21 @@ export function createGenuiPromptControl(
  */
 export function isTrustedPromptRequest(req: Pick<IncomingMessage, 'headers'>): boolean {
   const headers = req.headers ?? {}
-  // A browser labels every request it makes. A rebound hostname resolves to the
-  // loopback address, so its Origin host *matches* this server's Host header and
-  // the comparison below would pass — the label is what catches it.
   const site = headers['sec-fetch-site']
   if (typeof site === 'string' && site !== 'same-origin' && site !== 'none') return false
-  const origin = headers.origin
-  // A same-origin GET carries no Origin; a browser POST always does.
-  if (typeof origin !== 'string' || origin.length === 0) return true
+
+  // A named authority that is not this server's loopback address can never be this
+  // server speaking to its own page: a rebound hostname resolves to the loopback
+  // address while naming itself, so its Origin/Host comparison passes by construction
+  // (measured before this rule existed). An unknowable host keeps the old behaviour.
   const host = headers.host
-  if (typeof host !== 'string' || host.length === 0) return false
+  if (typeof host === 'string' && host.length > 0 && !isLoopbackAuthority(host)) return false
+
+  const origin = headers.origin
+  // A same-origin GET carries no Origin; a browser POST always does. Header-less
+  // clients (curl, maintainer scripts) keep working: they carry no page, so the
+  // rebinding trick is not available to them.
+  if (typeof origin !== 'string' || origin.length === 0) return true
   try {
     // Opaque origins ('null' from a sandboxed frame or a data: URL) do not parse.
     return new URL(origin).host === host

@@ -138,6 +138,70 @@ describe('parseThemedContent policy', () => {
     expect(parsed.content).toMatchObject({ componentName: 'Page' })
   })
 
+  it('refuses every tag that can load or run code, at any depth', () => {
+    const tags = ['script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'base', 'link', 'meta', 'template']
+    for (const tag of tags) {
+      const result = stripLifecycleScripts({ componentName: 'Page', children: [{ componentName: tag }] })
+      expect(result.blockedTags, tag).toContain(tag)
+      expect((result.value as { children: unknown[] }).children, tag).toEqual([])
+    }
+    // A hostile tag is hostile wherever it sits, and the tag name is matched case-insensitively.
+    const nested = stripLifecycleScripts({ componentName: 'Page', children: [{ componentName: 'div', children: [{ componentName: 'IFRAME' }] }] })
+    expect(nested.blockedTags).toEqual(['iframe'])
+  })
+
+  it('refuses a script URL in every attribute the browser resolves', () => {
+    const keys = ['href', 'src', 'srcdoc', 'action', 'formaction', 'poster', 'data', 'xlink:href']
+    for (const key of keys) {
+      const result = stripLifecycleScripts({ componentName: 'a', props: { [key]: 'javascript:alert(1)' } })
+      expect(result.blockedUrls, key).toBe(1)
+      expect((result.value as { props: Record<string, unknown> }).props, key).not.toHaveProperty(key)
+    }
+    for (const url of ['javascript:alert(1)', '  JaVaScRiPt : alert(1)', 'vbscript:msgbox(1)', 'data:text/html,<script>x</script>']) {
+      const result = stripLifecycleScripts({ componentName: 'a', props: { href: url } })
+      expect(result.blockedUrls, url).toBe(1)
+    }
+    // Ordinary URLs are data, not code, and survive untouched.
+    const safe = stripLifecycleScripts({ componentName: 'a', props: { href: 'https://ok.test/x', target: '_blank' } })
+    expect(safe.blockedUrls).toBe(0)
+    expect((safe.value as { props: Record<string, unknown> }).props).toEqual({ href: 'https://ok.test/x', target: '_blank' })
+  })
+
+  it('refuses props that hand the renderer a finished HTML string', () => {
+    for (const key of ['innerHTML', 'outerHTML']) {
+      const result = stripLifecycleScripts({ componentName: 'div', props: { [key]: '<iframe srcdoc="<script>x</script>"></iframe><img onerror="x">' } })
+      expect(result.blockedTags, key).toContain(key)
+      expect((result.value as { props: Record<string, unknown> }).props, key).not.toHaveProperty(key)
+    }
+  })
+
+  it('normalizes the URL before judging it, the way the URL parser does', () => {
+    // The browser strips tab/LF/CR anywhere and leading C0 controls, so each of these
+    // IS `javascript:` when the attribute is applied — a naive literal match misses them.
+    for (const url of ['jav\tascript:alert(1)', 'jav\nascript:alert(1)', '\u0001javascript:alert(1)']) {
+      const result = stripLifecycleScripts({ componentName: 'a', props: { href: url } })
+      expect(result.blockedUrls, JSON.stringify(url)).toBe(1)
+    }
+    // `ping` beacons on click but carries no code, so it is outside this policy's threat
+    const ping = stripLifecycleScripts({ componentName: 'a', props: { href: 'https://ok.test/', ping: 'https://evil.test/beacon' } })
+    expect(ping.blockedUrls).toBe(0)
+  })
+
+  it('refuses event-handler attributes, which run without a click', () => {
+    const img = stripLifecycleScripts({ componentName: 'img', props: { src: 'x.png', onerror: 'fetch("/steal")' } })
+    expect(img.blockedHandlers).toBe(1)
+    expect((img.value as { props: Record<string, unknown> }).props).toEqual({ src: 'x.png' })
+    // Case-insensitively, and at any depth (an SVG animation handler fires on its own).
+    const mixed = stripLifecycleScripts({ componentName: 'div', props: { onClick: 'alert(1)' } })
+    expect(mixed.blockedHandlers).toBe(1)
+    const nested = stripLifecycleScripts({ componentName: 'Page', children: [{ componentName: 'svg', children: [{ componentName: 'animate', props: { onbegin: 'alert(1)' } }] }] })
+    expect(nested.blockedHandlers).toBe(1)
+    // The rule is a name list, not /^on/: `once` is a real card key and must survive.
+    const benign = stripLifecycleScripts({ componentName: 'div', props: { once: 'yes', only: 'a', onboarding: 'true' } })
+    expect(benign.blockedHandlers).toBe(0)
+    expect((benign.value as { props: Record<string, unknown> }).props).toEqual({ once: 'yes', only: 'a', onboarding: 'true' })
+  })
+
   it('hands an unrepairable chunk back to the renderer untouched', () => {
     const parsed = parseThemedContent('hello world', false)
     expect(parsed.content).toBe('hello world')

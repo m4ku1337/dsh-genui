@@ -44,10 +44,30 @@ function cutSerialized(json: string): string {
   return byteNote(json.length)
 }
 
+/**
+ * Hard ceiling for the note itself. Key names are model-authored and unbounded,
+ * so "name what was dropped" must not become a second unbounded payload: the
+ * measured failure was a single 5000-character key name pushing the note alone
+ * past the cap.
+ */
+const MAX_NOTE_CHARS = 400
+
 function truncationNote(dropped: readonly string[]): string {
-  const shown = dropped.slice(0, MAX_DROPPED_NAMES).join(', ')
-  const rest = dropped.length - MAX_DROPPED_NAMES
-  return '…(state truncated, dropped keys: ' + shown
+  const names: string[] = []
+  let size = 0
+  let shown = 0
+  for (const key of dropped) {
+    const bounded = key.length > 60 ? key.slice(0, 57) + "..."
+      : key
+    const cost = (shown > 0 ? 2 : 0) + bounded.length
+    if (shown > 0 && size + cost > MAX_NOTE_CHARS) break
+    size += cost
+    names.push(bounded)
+    shown += 1
+    if (shown >= MAX_DROPPED_NAMES) break
+  }
+  const rest = dropped.length - shown + (names.length < shown ? 0 : 0)
+  return '…(state truncated, dropped keys: ' + names.join(', ')
     + (rest > 0 ? ', +' + String(rest) + ' more' : '') + ')'
 }
 

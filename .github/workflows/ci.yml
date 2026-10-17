@@ -33,5 +33,15 @@ jobs:
       # The suite owns the regression-prone parts: the schemaJson splitter, the
       # prompt-section toggle, the card content policy, and the built runtime's
       # invariants (Vue feature flags, dark-mode sync).
+      # lib/ is a tracked artifact: build it and prove the commit did not ship a
+      # stale bundle (the card-policy test reads the committed lib/, so a stale one
+      # would make the suite describe code that is not in the release).
+      - name: Build
+        run: pnpm build
+
+      - name: lib/ matches a fresh build
+        run: |
+          git diff --exit-code -- lib/ || (echo "lib/ is stale: run pnpm build and commit the result" && exit 1)
+
       - name: Unit tests
         run: pnpm test

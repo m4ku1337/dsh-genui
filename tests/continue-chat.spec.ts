@@ -110,6 +110,18 @@ describe('continueChatDraft', () => {
     expect((draft.split('相关参数为：')[1] ?? '').length).toBeLessThanOrEqual(CONTINUE_CHAT_STATE_LIMIT)
   })
 
+it('the cap holds for every shape, including a note made of long key names', () => {
+  // The measured failure: one 5000-character key name made the NOTE alone longer than
+  // the cap, so "state truncated" carried a 5034-character payload.
+  const longKey = "k".repeat(5000)
+  const draft = continueChatDraft("send", { [longKey]: 1 })
+  expect(draft.length).toBeLessThanOrEqual(4000)
+  const many = Object.fromEntries(Array.from({ length: 12 }, (_, i) => ["k".repeat(500), i]))
+  const draft2 = continueChatDraft("send", many)
+  expect(draft2.length).toBeLessThanOrEqual(4000)
+  expect(continueChatDraft("send", { a: "x".repeat(4000) }).length).toBeLessThanOrEqual(4000)
+})
+
   it('falls back to an empty object for state it cannot serialize', () => {
     const circular: Record<string, unknown> = {}
     circular.self = circular

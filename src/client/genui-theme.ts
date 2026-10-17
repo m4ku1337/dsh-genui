@@ -53,6 +53,8 @@ export interface ThemedCardContent {
   readonly blockedTags: readonly string[]
   /** URL attributes refused for carrying a script URL. */
   readonly blockedUrls: number
+  /** Event-handler attributes refused because they run code. */
+  readonly blockedHandlers: number
 }
 
 /** Theme a repaired schema and apply the content policy. */
@@ -69,6 +71,7 @@ function prepareCardContent(
     lifecycleScriptsRemoved: guarded.removed,
     blockedTags: guarded.blockedTags,
     blockedUrls: guarded.blockedUrls,
+    blockedHandlers: guarded.blockedHandlers,
   }
 }
 
@@ -91,12 +94,12 @@ export function parseThemedContent(
     return prepareCardContent(content, dark, isJsonComplete, options)
   }
   if (!content.trim()) {
-    return { content: {}, isJsonComplete: true, lifecycleScriptsRemoved: 0, blockedTags: [], blockedUrls: 0 }
+    return { content: {}, isJsonComplete: true, lifecycleScriptsRemoved: 0, blockedTags: [], blockedUrls: 0, blockedHandlers: 0 }
   }
 
   const repaired = repairJson(content)
   if (!repaired.value || typeof repaired.value !== 'object') {
-    return { content, isJsonComplete, lifecycleScriptsRemoved: 0, blockedTags: [], blockedUrls: 0 }
+    return { content, isJsonComplete, lifecycleScriptsRemoved: 0, blockedTags: [], blockedUrls: 0, blockedHandlers: 0 }
   }
 
   return prepareCardContent(

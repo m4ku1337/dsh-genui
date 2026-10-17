@@ -74,6 +74,32 @@ describe('shipped card element content policy', () => {
     expect((window as unknown as { __hookRan?: boolean }).__hookRan).toBeUndefined()
   }, 45_000)
 
+  it('says once per card what the policy dropped, and stays quiet for a clean card', async () => {
+    polyfillBrowser()
+    await import(pathToFileURL(BUNDLE).href)
+    const warns: string[] = []
+    const original = console.warn
+    console.warn = (...args: unknown[]) => { warns.push(args.map(String).join(' ')) }
+    try {
+      await mountCard(JSON.stringify({
+        componentName: 'Page',
+        lifeCycles: { onMounted: { type: 'JSFunction', value: 'function () {}' } },
+        children: [
+          { componentName: 'img', props: { src: 'x.png', onerror: 'fetch("/steal")' } },
+          { componentName: 'script', props: { src: 'https://evil.test/x.js' } },
+          { componentName: 'div', children: 'HELLO-CONTROL' },
+        ],
+      }))
+    } finally {
+      console.warn = original
+    }
+    const policy = warns.filter(line => line.includes('[dsh-genui] card content policy'))
+    expect(policy).toHaveLength(1)
+    expect(policy[0]).toContain('lifecycle hook')
+    expect(policy[0]).toContain('script')
+    expect(policy[0]).toContain('event handler')
+  }, 45_000)
+
   it('refuses executable HTML and script URLs in the rendered card', async () => {
     polyfillBrowser()
     await import(pathToFileURL(BUNDLE).href)

@@ -230,7 +230,19 @@ describe('createGenuiPromptControlHandler', () => {
 })
 
 describe('isTrustedPromptRequest', () => {
-  it('accepts the composer button talking to its own host', () => {
+  it('refuses a rebound authority even when its own label looks same-origin', () => {
+  // Measured before the loopback rule: a page served from a rebound hostname is
+  // same-origin with itself, so its Sec-Fetch-Site and its Origin/Host comparison
+  // both passed. The authority is what gives it away — this endpoint is loopback-only.
+  expect(isTrustedPromptRequest({ headers: { origin: 'http://evil', host: 'evil' } })).toBe(false)
+  expect(isTrustedPromptRequest({ headers: { 'sec-fetch-site': 'same-origin', host: 'evil' } })).toBe(false)
+  expect(isTrustedPromptRequest({ headers: { origin: 'http://evil', host: 'evil:3080' } })).toBe(false)
+  // Clients that send no headers (curl) name the real loopback host and keep working.
+  expect(isTrustedPromptRequest({ headers: { host: '127.0.0.1:3080' } })).toBe(true)
+  expect(isTrustedPromptRequest({ headers: { host: 'localhost:3080' } })).toBe(true)
+})
+
+it('accepts the composer button talking to its own host', () => {
     expect(isTrustedPromptRequest({
       headers: { origin: 'http://127.0.0.1:3080', host: '127.0.0.1:3080' },
     })).toBe(true)
